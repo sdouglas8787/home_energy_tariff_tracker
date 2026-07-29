@@ -8,14 +8,17 @@ forecast a full year, and see which UK dual-fuel tariff is cheapest.
 ## Folders
 
 ```
-data/     <- the only folder you open
-  input/  Home_Energy_Inputs.xlsx      (you edit this)
-  output/ Energy_Analysis_Output.xlsx  (created for you each run)
+data/
+  input/               Home_Energy_Inputs.xlsx   (you EDIT this)
+  half-hourly-inbox/   drag Bright/Glow CSV exports here (auto-filed after a run)
+  reports/             Energy_Report.html + Excel (you OPEN these)
+  system/              caches, logs, half-hourly history (LEAVE ALONE)
 run/      double-click to set up and run
 program/  the code (model = the maths, excel = reading/writing the workbook)
 info/     notes and an archived copy of the old workbook
 tests/    automated checks
 ```
+See `data/READ ME FIRST.txt` for what goes where.
 
 ## First-time setup (once)
 
@@ -30,7 +33,7 @@ This builds a local Python environment and installs what's needed.
 2. Run it:
    - **Mac:** double-click `run/run_mac.command`
    - **Windows:** double-click `run/run_windows.bat`
-3. Open `data/output/Energy_Analysis_Output.xlsx`.
+3. Open `data/reports/Energy_Report.html`.
 
 The output is a **single file that is overwritten every run** — it always shows
 the latest picture, with a "Generated" date/time on the Dashboard. There is no

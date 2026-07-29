@@ -986,6 +986,340 @@ def _cost_tab(monthly, rates, forward):
         f'{"".join(pviews)}</div>')
 
 
+def _day_inspector(recent, days, typ):
+    """Month -> week -> day picker. Data is embedded once and the chosen day is
+    drawn client-side (solid) against its weekday-typical (dashed grey), so the
+    whole history is browsable without pre-rendering hundreds of charts."""
+    if not days:
+        return ""
+    import json
+    day_js = {d.isoformat(): [round(v, 3) if v is not None else None for v in arr]
+              for d, arr in sorted(days.items())}
+    typ_js = {str(wd): [round(v, 3) for v in arr] for wd, arr in typ.items()}
+    data = json.dumps(day_js, separators=(",", ":"))
+    tdata = json.dumps(typ_js, separators=(",", ":"))
+    script = _DAY_JS.replace("__DAYS__", data).replace("__TYP__", tdata)
+    return (
+        '<h3 class="sec">Inspect a day (test your changes)</h3>'
+        '<div class="card" id="daycard"><p class="note">Pick a month, then a week, then a day to see that '
+        'day\'s half-hourly electricity (solid) against the <span style="color:#8aa0b2">typical for that '
+        'weekday</span> (dashed) &mdash; a Monday is compared to your average Monday, and so on. Switch '
+        'something off and the solid line dips below the dashed one at that time, which is how you confirm '
+        'the effect yourself.</p>'
+        '<div class="ranges">'
+        '<span class="rlabel">Month</span>'
+        '<select id="m_month" class="aggsel" style="width:auto"></select>'
+        '<span class="rlabel" style="margin-left:12px">Week</span>'
+        '<select id="m_week" class="aggsel" style="width:auto"></select>'
+        '<span class="rlabel" style="margin-left:12px">Day</span>'
+        '<select id="m_day" class="aggsel" style="width:auto"></select></div>'
+        '<div id="m_svg"></div>'
+        '<div id="m_note" class="wtrend" style="margin-top:6px"></div>'
+        f'{script}</div>')
+
+
+_DAY_JS = """<script>(function(){
+var DAYS=__DAYS__,TYP=__TYP__;
+var dows=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+var mons=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var keys=Object.keys(DAYS).sort();
+var mSel=document.getElementById('m_month'),wSel=document.getElementById('m_week'),dSel=document.getElementById('m_day');
+var box=document.getElementById('m_svg'),note=document.getElementById('m_note');
+function pd(k){var p=k.split('-');return new Date(+p[0],+p[1]-1,+p[2]);}
+function pad(n){return (n<10?'0':'')+n;}
+function iso(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());}
+function monday(k){var d=pd(k),wd=(d.getDay()+6)%7;d.setDate(d.getDate()-wd);return iso(d);}
+function lab(k){var d=pd(k);return dows[(d.getDay()+6)%7]+' '+pad(d.getDate())+' '+mons[d.getMonth()];}
+var months=[];keys.forEach(function(k){var ym=k.slice(0,7);if(months.indexOf(ym)<0)months.push(ym);});
+months.sort();months.reverse();
+mSel.innerHTML=months.map(function(ym){var p=ym.split('-');return '<option value="'+ym+'">'+mons[+p[1]-1]+' '+p[0]+'</option>';}).join('');
+function weeks(ym){var ws=[];keys.forEach(function(k){if(k.slice(0,7)===ym){var mo=monday(k);if(ws.indexOf(mo)<0)ws.push(mo);}});ws.sort();ws.reverse();return ws;}
+function daysOf(mo){var ds=keys.filter(function(k){return monday(k)===mo;});ds.sort();ds.reverse();return ds;}
+function fillWeeks(){var ws=weeks(mSel.value);
+wSel.innerHTML=ws.map(function(mo){var d=pd(mo),e=new Date(d);e.setDate(e.getDate()+6);
+return '<option value="'+mo+'">Mon '+pad(d.getDate())+' '+mons[d.getMonth()]+' \\u2013 Sun '+pad(e.getDate())+' '+mons[e.getMonth()]+'</option>';}).join('');fillDays();}
+function fillDays(){var ds=daysOf(wSel.value);
+dSel.innerHTML=ds.map(function(k){return '<option value="'+k+'">'+lab(k)+'</option>';}).join('');draw();}
+function ln(p){return p.map(function(q,i){return (i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1);}).join(' ');}
+function draw(){var k=dSel.value;if(!k||!DAYS[k]){box.innerHTML='';note.innerHTML='';return;}
+var day=DAYS[k],wd=(pd(k).getDay()+6)%7,tp=TYP[wd]||[];
+var W=900,H=200,ml=44,mr=12,mt=14,mb=30,x1=W-mr,y1=H-mb,i;
+var vmax=0.1;for(i=0;i<48;i++){if(day[i]!=null&&day[i]>vmax)vmax=day[i];if(tp[i]!=null&&tp[i]>vmax)vmax=tp[i];}vmax*=1.1;
+function sx(i){return ml+(x1-ml)*i/47;}function sy(v){return y1-(y1-mt)*v/vmax;}
+var s='',t;for(t=0;t<5;t++){var vv=vmax*t/4,y=sy(vv);
+s+='<line x1="'+ml+'" y1="'+y.toFixed(1)+'" x2="'+x1+'" y2="'+y.toFixed(1)+'" class="grid"/>';
+s+='<text x="'+(ml-6)+'" y="'+(y+3).toFixed(1)+'" class="ytick">'+vv.toFixed(1)+'</text>';}
+for(var h=0;h<24;h+=3){s+='<text x="'+sx(h*2).toFixed(1)+'" y="'+(H-8)+'" class="xtick">'+pad(h)+'</text>';}
+var tpts=[];for(i=0;i<48;i++)tpts.push([sx(i),sy(tp[i]||0)]);
+s+='<path class="fc" style="stroke:#8aa0b2" d="'+ln(tpts)+'"/>';
+var dpts=[];for(i=0;i<48;i++)if(day[i]!=null)dpts.push([sx(i),sy(day[i])]);
+if(dpts.length>1)s+='<path class="ac" style="stroke:var(--elec)" d="'+ln(dpts)+'"/>';
+box.innerHTML='<svg viewBox="0 0 900 200" class="chart">'+s+'</svg>';
+var dt=0,tt=0,filled=0;for(i=0;i<48;i++){if(day[i]!=null){dt+=day[i];filled++;}tt+=(tp[i]||0);}
+if(filled<44){note.innerHTML='Partial day: <b>'+dt.toFixed(1)+' kWh</b> so far over '+filled+' of 48 half-hours. '+
+'The smart-meter feed lags about 2 days, so the most recent days fill in on a later import.';}
+else{var diff=dt-tt,pct=tt?Math.round(diff/tt*100):0;
+note.innerHTML='This '+dows[wd]+': <b>'+dt.toFixed(1)+' kWh</b> vs a typical '+dows[wd]+' <b>'+tt.toFixed(1)+' kWh</b> &mdash; '+
+(diff<=0?'<span style=\\"color:var(--pos)\\">'+Math.abs(pct)+'% lower</span>':'<span style=\\"color:var(--neg)\\">'+pct+'% higher</span>')+'.';}}
+mSel.addEventListener('change',fillWeeks);
+wSel.addEventListener('change',fillDays);
+dSel.addEventListener('change',draw);
+fillWeeks();
+})();</script>"""
+
+
+def _drivers_card(drivers, elec_rate, gas_rate):
+    if not drivers or not drivers.get("Gas"):
+        return ""
+
+    def bar(fuel, rate):
+        d = drivers.get(fuel)
+        if not d:
+            return ""
+        heat = d["heating_kwh"] * rate / 100
+        base = d["base_kwh"] * rate / 100
+        tot = heat + base or 1
+        hp = heat / tot * 100
+        return (
+            f'<p style="font-size:14px;margin:10px 0 4px"><b>{fuel}</b> — the model explains '
+            f'<b>{d["r2"] * 100:.0f}%</b> of your daily use.</p>'
+            f'<div class="dbar"><span class="dh" style="width:{hp:.0f}%">heating {_money(heat)}</span>'
+            f'<span class="dbse" style="width:{100 - hp:.0f}%">base {_money(base)}</span></div>')
+
+    return (
+        '<div class="card"><h3>What is driving your bill</h3>'
+        '<p class="note">A regression splits each fuel into weather-driven <b>heating</b> (rises with the '
+        'cold) and a weather-independent <b>base</b> (hot water, cooking, and the always-on load). '
+        'The percentage is how much of the day-to-day variation the model explains.</p>'
+        f'{bar("Gas", gas_rate)}{bar("Electricity", elec_rate)}'
+        '<p class="note">Gas is mostly heating, so the thermostat and insulation are the levers. Electricity '
+        'is mostly base, so the always-on draw is the lever, not the weather.</p></div>')
+
+
+def _actions_tab(actions):
+    if not actions:
+        return ('<div class="card"><h3>What should I do?</h3><p class="note">Add your readings, tariffs and '
+                'half-hourly data and this becomes a ranked list of exactly what saves you the most.</p></div>')
+    conf = {"high": "var(--pos)", "medium": "var(--gas)", "low": "var(--muted)"}
+    rows = "".join(
+        f'<tr><td class="num money"><b>{_money(v)}</b><span class="u">/yr</span></td>'
+        f'<td><div class="tname">{what}</div><div class="tsub">{why}</div></td>'
+        f'<td class="num"><span class="chip" style="color:{conf.get(c, "var(--muted)")};'
+        f'border-color:{conf.get(c, "var(--muted)")}">{c}</span></td></tr>'
+        for v, what, c, why in actions)
+    total = sum(v for v, *_ in actions)
+    return (
+        '<div class="headline">Do these, biggest first. Together they are worth on the order of '
+        f'<b>{_money(total)}/yr</b>, though some overlap. Confidence shows how sure the number is.</div>'
+        '<h3 class="sec">Ranked by £ per year</h3>'
+        '<div class="card"><table class="acts"><thead><tr><th>Saving</th><th>Action</th><th>Confidence</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table>'
+        '<p class="note">Each figure is backed by a tab: switching by the Monte-Carlo range, the always-on by '
+        'your half-hourly baseload, the thermostat by the driver model, the slots by your load profile.</p></div>')
+
+
+def _hh_heatmap_svg(wh, color, preselect):
+    """Clickable 7x24 heat-map. `preselect` is a set of (wd,hour) marked selected."""
+    W, H, ml, mt, mb = 960, 330, 50, 30, 26
+    x0, x1, y0, y1 = ml, W - 12, mt, H - mb
+    if not wh:
+        return ""
+    vmax = max(wh.values()) or 1
+    cw = (x1 - x0) / 24
+    rh = (y1 - y0) / 7
+    dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    parts = []
+    for h in range(0, 24, 2):        # label every 2 hours, top and bottom
+        parts.append(f'<text x="{x0 + (h + 0.5) * cw:.1f}" y="{y0 - 10:.1f}" class="xtick">{h:02d}</text>')
+        parts.append(f'<text x="{x0 + (h + 0.5) * cw:.1f}" y="{y1 + 16:.1f}" class="xtick">{h:02d}</text>')
+    for wd in range(7):
+        parts.append(f'<text x="{x0 - 8:.1f}" y="{y0 + (wd + 0.62) * rh:.1f}" class="ytick">{dows[wd]}</text>')
+        for h in range(24):
+            v = wh.get((wd, h), 0.0)
+            a = 0.05 + 0.9 * (v / vmax) ** 0.85          # stronger contrast
+            sel = " sel" if (wd, h) in preselect else ""
+            parts.append(f'<rect class="slot{sel}" data-k="{wd}-{h}" x="{x0 + h * cw + 0.6:.1f}" '
+                         f'y="{y0 + wd * rh + 0.6:.1f}" width="{cw - 1.2:.1f}" height="{rh - 1.2:.1f}" rx="2" '
+                         f'style="fill:{color};fill-opacity:{a:.2f}">'
+                         f'<title>{dows[wd]} {h:02d}:00 — {v:.2f} kWh (click to pick)</title></rect>')
+    return f'<svg id="hhmap" viewBox="0 0 {W} {H}" class="chart">{"".join(parts)}</svg>'
+
+
+def _baseload_month_svg(series, color="#7c9aad"):
+    """Line of overnight baseload (kWh/h) per month."""
+    if len(series) < 2:
+        return ""
+    W, H, ml, mr, mt, mb = 960, 200, 46, 14, 14, 42
+    x0, x1, y0, y1 = ml, W - mr, mt, H - mb
+    vals = [v for _, v in series]
+    vmax = max(vals) * 1.15 or 1
+    n = len(series)
+
+    def sx(i):
+        return x0 + (x1 - x0) * i / (n - 1)
+
+    def sy(v):
+        return y1 - (y1 - y0) * v / vmax
+
+    parts = []
+    for t in range(5):
+        v = vmax * t / 4
+        y = sy(v)
+        parts.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x1}" y2="{y:.1f}" class="grid"/>')
+        parts.append(f'<text x="{x0 - 6:.1f}" y="{y + 3:.1f}" class="ytick">{v:.2f}</text>')
+    parts.append(_time_axis([d for d, _ in series], sx, H))
+    pts = [(sx(i), sy(v)) for i, (_, v) in enumerate(series)]
+    parts.append(f'<path class="sl" style="stroke:{color}" d="{_line(pts)}"/>')
+    for i, (d, v) in enumerate(series):
+        parts.append(f'<circle cx="{pts[i][0]:.1f}" cy="{pts[i][1]:.1f}" r="3" style="fill:{color}">'
+                     f'<title>{_mlab(d)}: {v:.2f} kWh/h overnight</title></circle>')
+    return f'<svg viewBox="0 0 {W} {H}" class="chart">{"".join(parts)}</svg>'
+
+
+def _hh_tab(profile, tou, slots8, elec_rate, elec_standing=0.0, day_data=(None, None, None)):
+    if not profile or not profile.get("Electricity"):
+        return ('<div class="card"><h3>Time of use</h3><p class="note">Drop your half-hourly CSV exports '
+                '(from Bright / Glow) into <b>data/input/half_hourly</b> and re-run. This tab will then show '
+                'when you use power, your always-on baseload, and what time-of-use tariffs would save.</p></div>')
+    e = profile["Electricity"]
+    g = profile.get("Gas")
+    dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    always_on = e["baseload_kwh_per_h"] * 8760
+    always_cost = always_on * elec_rate / 100
+    base_share = always_on / e["annual"] if e["annual"] else 0
+    top = sorted(e["by_hour"].items(), key=lambda x: -x[1])[:5]
+    gas_line = (f' Gas heating peaks <b>{dows[g["peak_wd"]]} {g["peak_hour"]:02d}:00</b>.' if g else "")
+
+    high = base_share > 0.5
+    flag = (' That is <b>unusually high</b> (a typical home is 20 to 40%), so something is very likely '
+            'drawing power around the clock without you realising.') if high else ""
+    always_card = (
+        '<div class="card"><h3>"Always on" (baseload)</h3>'
+        f'<p class="note">At your quietest hour (around {e["baseload_hour"]:02d}:00, asleep, nothing in use) '
+        f'you still draw about <b>{e["baseload_kwh_per_h"]:.2f} kWh every hour</b>. That constant background '
+        f'load is roughly <b>{always_on:,.0f} kWh a year</b> (~<b>{_money(always_cost)}/yr</b>), about '
+        f'<b>{base_share:.0%}</b> of your electricity.{flag}</p>'
+        '<p class="note">Likely suspects at that level: a second or old fridge/freezer, an aquarium or wine '
+        'fridge, electric hot-water recirculation or an immersion left on, underfloor heating or a '
+        'dehumidifier, or a stack of always-on electronics. To find it, switch things off one at a time and '
+        'watch whether the overnight level drops.</p></div>')
+
+    slot_card = ""
+    if slots8:
+        chosen = ", ".join(f'<b>{d} {h:02d}:00</b>' for d, h, _ in slots8["slots"])
+        per = slots8["per_kwh_saved"] * 100
+        slot_card = (
+            '<div class="card"><h3>Your 8 best discount hours (the ScottishPower offer)</h3>'
+            f'<p class="note">You get eight one-hour 50%-off slots a week. Placed on your heaviest hours they '
+            f'land on: {chosen}.</p>'
+            f'<p style="font-size:14px;margin:6px 0">From your current usage those slots save about '
+            f'<b>{_money(slots8["annual_saving"])}/yr</b>. Every extra kWh you deliberately shift into a slot '
+            f'saves another <b>{per:.0f}p</b>.</p>'
+            f'<p class="note">So moving flexible loads into a slot pays: a dishwasher cycle (~1.2 kWh) run in '
+            f'a discounted hour instead of a normal one saves ~{1.2 * slots8["per_kwh_saved"] * 100:.0f}p, and '
+            f'the washing machine (~0.8 kWh) ~{0.8 * slots8["per_kwh_saved"] * 100:.0f}p. Run both in-slot a '
+            f'few times a week and the offer is worth noticeably more than the headline.</p></div>')
+
+    tou_rows = "".join(
+        f'<tr><td>{lab}</td><td class="num">{kwh:,.0f} kWh</td>'
+        f'<td class="num" style="color:var(--pos)">{_money(save)}/yr</td></tr>'
+        for lab, kwh, save in tou)
+
+    # interactive slot picker: pre-select the 8 heaviest hours, embed the profile for live JS
+    preselect = {k for k, _ in sorted(e["wh"].items(), key=lambda kv: -kv[1])[:8]}
+    wh_js = "{" + ",".join(f'"{wd}-{h}":{v:.3f}' for (wd, h), v in e["wh"].items()) + "}"
+    picker_js = (
+        '<script>(function(){'
+        f'var WH={wh_js},RATE={elec_rate};'
+        'function nmax(){return Math.max(1,+document.getElementById("slotn").value||8);}'
+        'function disc(){return (+document.getElementById("slotpct").value||50)/100;}'
+        'function sel(){return Array.prototype.slice.call(document.querySelectorAll("#hhmap .slot.sel"));}'
+        'function recalc(){var s=sel(),k=0;s.forEach(function(r){k+=WH[r.dataset.k]||0;});'
+        'var save=k*disc()*RATE/100*52;'
+        'document.getElementById("slotout").innerHTML="Selected <b>"+s.length+"/"+nmax()+'
+        '"</b> slots, <b>"+k.toFixed(1)+" kWh/week</b>, saving <b>\\u00a3"+Math.round(save)+'
+        '"/yr</b> at "+Math.round(disc()*100)+"% off";}'
+        'function trim(){var s=sel();if(s.length>nmax()){'
+        's.sort(function(a,b){return (WH[a.dataset.k]||0)-(WH[b.dataset.k]||0);});'
+        'while(s.length>nmax()){s.shift().classList.remove("sel");}}recalc();}'
+        'document.querySelectorAll("#hhmap .slot").forEach(function(r){'
+        'r.addEventListener("click",function(){'
+        'if(!r.classList.contains("sel")&&sel().length>=nmax())return;'
+        'r.classList.toggle("sel");recalc();});});'
+        'document.getElementById("slotn").addEventListener("input",trim);'
+        'document.getElementById("slotpct").addEventListener("input",recalc);'
+        'recalc();})();</script>')
+
+    # Economy 7 day/night what-if, live against the real hourly split
+    ha = {h: e["by_hour"].get(h, 0) * 365 for h in range(24)}
+    hourly_js = "[" + ",".join(f"{ha[h]:.1f}" for h in range(24)) + "]"
+    total_e = sum(ha.values())
+    e7_card = (
+        '<h3 class="sec">Would a cheap-night tariff (Economy 7) help?</h3>'
+        '<div class="card"><p class="note">Economy 7 gives a cheaper night rate but a higher day rate. '
+        'Only ~23% of your electricity is overnight, so it wins only if the night rate is much lower, or you '
+        'shift usage. Enter a quote and compare it to your current flat tariff, live.</p>'
+        '<table class="wtab"><tbody>'
+        f'<tr><td class="wf">Day rate (p/kWh)</td><td><input id="e7d" type="number" step="0.01" value="{elec_rate:.2f}"></td></tr>'
+        f'<tr><td class="wf">Night rate (p/kWh)</td><td><input id="e7n" type="number" step="0.01" value="{elec_rate * 0.5:.2f}"></td></tr>'
+        f'<tr><td class="wf">Standing (p/day)</td><td><input id="e7s" type="number" step="0.01" value="{elec_standing:.2f}"></td></tr>'
+        '<tr><td class="wf">Night from (hour)</td><td><input id="e7a" type="number" min="0" max="23" value="0"></td></tr>'
+        '<tr><td class="wf">Night to (hour)</td><td><input id="e7b" type="number" min="1" max="24" value="7"></td></tr>'
+        '</tbody></table><div id="e7out" class="wtrend"></div>'
+        '<script>(function(){'
+        f'var H={hourly_js},FLAT={elec_rate},FSTD={elec_standing},TOT={total_e:.0f};'
+        'function calc(){'
+        'var dr=+document.getElementById("e7d").value||0,nr=+document.getElementById("e7n").value||0,'
+        'st=+document.getElementById("e7s").value||0,a=+document.getElementById("e7a").value||0,'
+        'b=+document.getElementById("e7b").value||0,night=0;'
+        'for(var h=0;h<24;h++){var w=(a<=b)?(h>=a&&h<b):(h>=a||h<b);if(w)night+=H[h];}'
+        'var day=TOT-night,e7=day*dr/100+night*nr/100+365*st/100,flat=TOT*FLAT/100+365*FSTD/100,d=flat-e7;'
+        'document.getElementById("e7out").innerHTML="Economy 7: <b>\\u00a3"+Math.round(e7)+"/yr</b> vs your '
+        'flat tariff <b>\\u00a3"+Math.round(flat)+"</b> &mdash; "+(d>=0?"<span style=\\"color:var(--pos)\\">saves '
+        '\\u00a3"+Math.round(d)+"/yr</span>":"<span style=\\"color:var(--neg)\\">costs \\u00a3"+Math.round(-d)+'
+        '" more/yr</span>")+" ("+Math.round(night)+" kWh night / "+Math.round(day)+" kWh day).";}'
+        '["e7d","e7n","e7s","e7a","e7b"].forEach(function(id){'
+        'document.getElementById(id).addEventListener("input",calc);});calc();})();</script></div>')
+
+    baseload_card = ""
+    if e.get("baseload_series"):
+        baseload_card = (
+            '<h3 class="sec">Always on, over time (phantom-load hunt)</h3>'
+            '<div class="card"><p class="note">Your overnight draw (kWh per hour, 1am to 5am) each month. '
+            'A flat line means a permanent device; a step down after you switch something off is the proof '
+            'you found it. Re-import after unplugging a suspect and watch this drop.</p>'
+            f'{_baseload_month_svg(e["baseload_series"])}</div>')
+
+    return (
+        '<div class="headline">'
+        f'Your electricity peaks in the evening (dinner and dishwasher), and about <b>{base_share:.0%}</b> of '
+        f'it is "always on". Both are levers: shift the evening load into a discount slot, and hunt down the '
+        f'background draw.</div>'
+        '<h3 class="sec">Pick your discount slots</h3>'
+        '<div class="card"><p class="note">Average electricity per hour, by day and time (darker = more). '
+        '<b>Click cells to choose slots</b> and the saving updates live. Your heaviest hours are pre-selected. '
+        'This is usage (kWh); the standing charge is a flat daily fee that does not vary by time, so it is not '
+        'shown here.</p>'
+        '<div class="ranges"><span class="rlabel">Slots</span>'
+        '<input id="slotn" type="number" min="1" max="24" value="8" class="aggsel" style="width:70px">'
+        '<span class="rlabel" style="margin-left:12px">Discount %</span>'
+        '<input id="slotpct" type="number" min="1" max="100" value="50" class="aggsel" style="width:70px"></div>'
+        f'{_hh_heatmap_svg(e["wh"], "var(--elec)", preselect)}'
+        f'<div id="slotout" class="wtrend" style="margin-top:8px"></div>'
+        f'<p class="note">Busiest hours: {", ".join(f"<b>{h:02d}:00</b> ({v:.2f})" for h, v in top)}. '
+        f'Peak is {dows[e["peak_wd"]]} {e["peak_hour"]:02d}:00.{gas_line}</p>{picker_js}</div>'
+        f'<h3 class="sec">The 8-slot offer, on your current usage</h3>{slot_card}'
+        f'{e7_card}'
+        f'<h3 class="sec">Always on</h3>{always_card}'
+        f'{baseload_card}'
+        f'{_day_inspector(*day_data)}'
+        '<h3 class="sec">Other discount windows</h3>'
+        '<div class="card"><p class="note">Your real usage in each window and the saving if it were 50% off, '
+        'for comparison.</p>'
+        '<table><thead><tr><th>Discount window</th><th>Your usage in it</th><th>Saving at 50% off</th>'
+        f'</tr></thead><tbody>{tou_rows}</tbody></table></div>')
+
+
 def _dd_card(dd, forecast_cost, actual_cost, balance):
     if not dd or dd <= 0:
         return ('<div class="card"><h3>Direct debit check</h3>'
@@ -1057,7 +1391,9 @@ def _tracking_card(tracking):
 
 
 def render_html(path, address, usage, method, comparisons, insights, backtest,
-                forward, generated, settings, monthly, weather, tracking, annual_actual, bills, mc):
+                forward, generated, settings, monthly, weather, tracking, annual_actual, bills, mc,
+                hh_profile=None, tou=None, slots8=None, drivers=None, actions=None, gas_rate=0.0,
+                day_data=(None, None, None)):
     best = comparisons[0] if comparisons else None
     ei, gi = insights["Electricity"], insights["Gas"]
     ebt, gbt = backtest.get("Electricity", {}), backtest.get("Gas", {})
@@ -1121,7 +1457,7 @@ def render_html(path, address, usage, method, comparisons, insights, backtest,
             good.append(f"{nm.lower()} is already down {abs(y['pct']) * 100:.0f}% "
                         f"(~{_money(cost * abs(y['pct']))}/yr saved)")
     actions_note = ("On track: " + "; ".join(good) + " — keep it up.") if good else ""
-    actions = "".join(
+    sw_actions = "".join(
         f'<tr><td class="num money"><b>{_money(v)}</b><span class="u">/yr</span></td>'
         f'<td><div class="tname">{what}</div><div class="tsub">{why}</div></td></tr>'
         for v, what, why in acts if v >= 1)
@@ -1264,6 +1600,9 @@ def render_html(path, address, usage, method, comparisons, insights, backtest,
     tracking_card = _tracking_card(tracking)
     season_card = _season_yoy_card(monthly, rates, {1: ecorr, 2: gcorr})
     cost_tab = _cost_tab(monthly, rates, forward)
+    hh_tab = _hh_tab(hh_profile, tou or [], slots8, rates[0], rates[1], day_data)
+    drivers_card = _drivers_card(drivers, rates[0], gas_rate)
+    actions_tab = _actions_tab(actions or [])
     dd_card = _dd_card(float(settings.get("Monthly direct debit (£)", 0) or 0), current_cost,
                        annual_actual, settings.get("Account balance (£, - if in debit)"))
     mc_card = _mc_card(mc)
@@ -1297,9 +1636,10 @@ def render_html(path, address, usage, method, comparisons, insights, backtest,
         tiles=tiles, switch_tiles=switch_tiles, leaderboard=leaderboard, tracker_note=tracker_note,
         range_buttons=range_buttons, rangeviews=rangeviews, weather_card=weather_card,
         tracking_card=tracking_card, dd_card=dd_card, compare_card=compare_card, mc_card=mc_card,
-        season_card=season_card, headline=headline, cost_tab=cost_tab,
+        season_card=season_card, headline=headline, cost_tab=cost_tab, hh_tab=hh_tab,
+        drivers_card=drivers_card, actions_tab=actions_tab,
         tariff_options=tariff_options, tariff_js=tariff_js,
-        suggestions=suggestions, actions=actions, actions_note=actions_note, assumptions=assumptions,
+        suggestions=suggestions, sw_actions=sw_actions, actions_note=actions_note, assumptions=assumptions,
         e_kwh=round(usage[0]), g_kwh=round(usage[1]), current_cost=round(current_cost),
         cur_eu=rates[0], cur_esc=rates[1], cur_gu=rates[2], cur_gsc=rates[3],
         renewal=round(renewal_cost), infl_pct=round(infl * 100),
@@ -1384,6 +1724,12 @@ h3.sec{{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(-
 .pivot th.agg{{background:var(--surface2)}}
 .pivot .fcell{{font-style:italic;color:#8257c9;font-weight:600}}
 .pivot .pcell{{background:var(--surface2)}} .pivot .pcell .fv{{font-style:italic;color:#8257c9;font-weight:600}}
+.dv{{display:none}} .dv.active{{display:block}}
+.chart .slot{{cursor:pointer;stroke:var(--bg);stroke-width:1}}
+.chart .slot.sel{{stroke:var(--text);stroke-width:2.5}}
+.dbar{{display:flex;height:30px;border-radius:8px;overflow:hidden;margin:4px 0 2px;font-size:12px;font-weight:600}}
+.dbar span{{display:flex;align-items:center;justify-content:center;color:#fff;white-space:nowrap;min-width:0}}
+.dbar .dh{{background:var(--gas)}} .dbar .dbse{{background:var(--elec)}}
 #pivotcard.nofc .fv,#pivotcard.nofc .fvsum{{display:none}}
 #pivotcard.nofc .fcell::after{{content:"·";color:var(--border)}}
 #pivotcard:not(.nofc) .av{{display:none}}
@@ -1497,13 +1843,19 @@ td.pos{{color:var(--pos);font-weight:600}} td.neg{{color:var(--neg);font-weight:
 <div class="headline">{headline}</div>
 
 <div class="tabbar">
-  <button class="tab on" data-t="current">Current performance</button>
+  <button class="tab on" data-t="todo">What to do</button>
+  <button class="tab" data-t="current">Current performance</button>
   <button class="tab" data-t="costs">Cost breakdown</button>
+  <button class="tab" data-t="timeofuse">Time of use</button>
   <button class="tab" data-t="switch">Switching</button>
   <button class="tab" data-t="info">Info</button>
 </div>
 
-<section class="tabpane active" data-t="current">
+<section class="tabpane active" data-t="todo">
+{actions_tab}
+</section>
+
+<section class="tabpane" data-t="current">
 <div class="grid tiles">{tiles}</div>
 <h3 class="sec">Are you paying the right amount?</h3>
 {dd_card}
@@ -1524,12 +1876,18 @@ td.pos{{color:var(--pos);font-weight:600}} td.neg{{color:var(--neg);font-weight:
 </section>
 
 <section class="tabpane" data-t="costs">
+<h3 class="sec">What is driving your bill</h3>
+{drivers_card}
 {cost_tab}
+</section>
+
+<section class="tabpane" data-t="timeofuse">
+{hh_tab}
 </section>
 
 <section class="tabpane" data-t="switch">
 <h3 class="sec">Best actions — ranked by £/year saved</h3>
-<div class="card"><table class="acts"><tbody>{actions}</tbody></table>
+<div class="card"><table class="acts"><tbody>{sw_actions}</tbody></table>
 <p class="note" style="color:var(--pos)">{actions_note}</p>
 <p class="note">Switch figures are exact for your forecast usage; behaviour figures (thermostat, cutting use) are typical estimates.</p></div>
 

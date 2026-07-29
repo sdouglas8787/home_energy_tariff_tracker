@@ -1,0 +1,33 @@
+WHAT GOES WHERE
+===============
+
+You only ever touch two folders.
+
+  input/                 <- EDIT the workbook here (Home_Energy_Inputs.xlsx).
+  half-hourly-inbox/     <- DRAG your Bright / Glow CSV exports here, then run.
+
+Everything else is produced or managed for you.
+
+  reports/               <- OPEN these after running (the HTML report + Excel).
+  system/                <- LEAVE ALONE. Caches, logs, and your half-hourly history.
+      half-hourly-archive/   <- imported inbox files are filed here automatically.
+
+
+THE ROUTINE
+===========
+1. Edit input/Home_Energy_Inputs.xlsx (readings, tariffs, bills, settings).
+2. Optional: drop new half-hourly CSVs into half-hourly-inbox/.
+3. Run the tool (run/run_mac or run/run_windows).
+4. Open reports/Energy_Report.html.
+
+After a run the inbox will be EMPTY. That is your confirmation the files were read;
+the originals are safe in system/half-hourly-archive/. Nothing is deleted.
+
+
+MOVING HOUSE
+============
+Do File > Save As on the whole project folder for the new address, then:
+  - clear the yellow cells in the workbook and enter the new meter's opening readings,
+  - empty system/half_hourly_store.csv and system/half-hourly-archive/ (old home's history),
+  - drop the new home's half-hourly exports into the inbox.
+The old home stays intact in its own copy.

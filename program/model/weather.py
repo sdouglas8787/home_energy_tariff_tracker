@@ -75,3 +75,16 @@ def get_monthly_weather(lat, lon, start, end, cache_file):
             "rain": sum(r.get("precipitation_sum") or 0 for r in recs),
             "hdd": sum(max(0.0, HDD_BASE - v) for v in means), "days": len(recs)}
     return out
+
+
+def get_daily_temps(cache_file, lat, lon):
+    """Return {date-obj: mean_temp} from the cache (populated by get_monthly_weather)."""
+    from datetime import date
+    cache = _load(cache_file)
+    daily = cache.get(f"{lat:.3f},{lon:.3f}", {})
+    out = {}
+    for t, rec in daily.items():
+        if isinstance(rec, dict) and rec.get("temperature_2m_mean") is not None:
+            y, m, d = t.split("-")
+            out[date(int(y), int(m), int(d))] = rec["temperature_2m_mean"]
+    return out
