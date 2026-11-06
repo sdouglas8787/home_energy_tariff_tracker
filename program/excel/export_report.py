@@ -88,8 +88,34 @@ def _mlabel(dt):
     return dt.strftime("%b %Y")
 
 
+def _flat_sheet(wb, name, headers, rows, formats=None, freeze="A2"):
+    """A plain tidy table: one header row, one record per row, nothing merged.
+
+    Deliberately unstyled beyond the header. These sheets exist to be selected and
+    turned into a PivotTable, and merged cells or title banners break that.
+    """
+    ws = wb.create_sheet(name)
+    _base(ws)
+    for i, h in enumerate(headers, 1):
+        cell = ws.cell(1, i, h)
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.font = Font(name=FONT, bold=True, color=WHITE)
+        cell.alignment = C
+    for row in rows:
+        ws.append(row)
+    for col, fmt in (formats or {}).items():
+        letter = get_column_letter(headers.index(col) + 1)
+        for cell in ws[letter][1:]:
+            cell.number_format = fmt
+    for i, h in enumerate(headers, 1):
+        ws.column_dimensions[get_column_letter(i)].width = max(11, len(str(h)) + 3)
+    ws.freeze_panes = freeze
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(2, ws.max_row)}"
+    return ws
+
+
 def export_output(path, address, usage, method, monthly, comparisons, validation,
-                  settings, generated, insights):
+                  settings, generated, insights, hh_tables=None):
     wb = Workbook()
 
     # ============================ EXECUTIVE SUMMARY ============================
@@ -304,6 +330,10 @@ def export_output(path, address, usage, method, monthly, comparisons, validation
     _autosize(ws)
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    # ======================= RAW TABLES (for PivotTables) =======================
+    for name, headers, rows, fmts in (hh_tables or []):
+        _flat_sheet(wb, name, headers, rows, fmts)
+
     wb.save(path)
 
 

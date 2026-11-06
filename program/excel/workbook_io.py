@@ -19,6 +19,29 @@ def as_float(value, default=0.0):
     return float(value) if value not in (None, "") else default
 
 
+def _headers(ws):
+    """{header name: 0-based column index} from row 1, so added columns don't shift anything."""
+    return {str(c.value).strip(): i for i, c in enumerate(ws[1]) if c.value}
+
+
+def _reading_value(row, cols, main, derived):
+    """Your reading if you gave one, otherwise the derived one, plus which it was.
+
+    A blank in your column is what asks for the derived value to be used -- fill the
+    real number in later and it takes precedence again, with the derived value left
+    beside it for the cross-check.
+    """
+    def at(name):
+        i = cols.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    if at(main) not in (None, ""):
+        return as_float(at(main)), False
+    if at(derived) not in (None, ""):
+        return as_float(at(derived)), True
+    return None, False
+
+
 def load_inputs(path: Path):
     """Read the four-tab input workbook.
 
@@ -33,17 +56,27 @@ def load_inputs(path: Path):
             settings[str(row[0])] = row[1]
 
     readings = []
-    for row in wb["Electricity"].iter_rows(min_row=2, values_only=True):
-        if not row[0] or row[1] in (None, ""):
+    ws = wb["Electricity"]
+    cols = _headers(ws)
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row[0]:
             continue
-        readings.append(Reading(as_date(row[0]), "Electricity", as_float(row[1]),
-                                 str(row[2] or "Actual"), "kWh"))
+        value, from_hh = _reading_value(row, cols, "Meter_Reading_kWh", "Derived_Reading_kWh")
+        if value is None:
+            continue
+        read_type = "Derived" if from_hh else str(row[2] or "Actual")
+        readings.append(Reading(as_date(row[0]), "Electricity", value, read_type, "kWh"))
 
-    for row in wb["Gas"].iter_rows(min_row=2, values_only=True):
-        if not row[0] or row[1] in (None, ""):
+    ws = wb["Gas"]
+    cols = _headers(ws)
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row[0]:
             continue
-        readings.append(Reading(as_date(row[0]), "Gas", as_float(row[1]),
-                                 str(row[3] or "Actual"), str(row[2] or "m3")))
+        value, from_hh = _reading_value(row, cols, "Meter_Reading", "Derived_Reading")
+        if value is None:
+            continue
+        read_type = "Derived" if from_hh else str(row[3] or "Actual")
+        readings.append(Reading(as_date(row[0]), "Gas", value, read_type, str(row[2] or "m3")))
 
     tariffs = []
     # Tariffs has a two-row banded header (ELECTRICITY / GAS), data from row 3.

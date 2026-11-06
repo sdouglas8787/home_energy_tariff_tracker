@@ -4,7 +4,15 @@ WHAT GOES WHERE
 You only ever touch two folders.
 
   input/                 <- EDIT the workbook here (Home_Energy_Inputs.xlsx).
+                            Optional: bright_account.txt lets the tool download
+                            your half-hourly gas and electricity by itself.
+                            Rename bright_account.example.txt to set it up.
   half-hourly-inbox/     <- DRAG your Bright / Glow CSV exports here, then run.
+                            Not needed if bright_account.txt is set up, but it
+                            still works, and it is how you load history older
+                            than the app goes back. Export at HALF-HOURLY
+                            granularity - a monthly export looks the same but
+                            the numbers are far too big and get thrown out.
 
 Everything else is produced or managed for you.
 
@@ -16,9 +24,19 @@ Everything else is produced or managed for you.
 THE ROUTINE
 ===========
 1. Edit input/Home_Energy_Inputs.xlsx (readings, tariffs, bills, settings).
-2. Optional: drop new half-hourly CSVs into half-hourly-inbox/.
+2. Optional: drop new half-hourly CSVs into half-hourly-inbox/
+   (skip this once bright_account.txt is set up - it fetches them for you).
 3. Run the tool (run/run_mac or run/run_windows).
-4. Open reports/Energy_Report.html.
+4. The report opens by itself. If you already had it open in a browser tab,
+   refresh the tab - it is a file on disk, not a live page.
+
+The run prints a "this run used" summary telling you which workbook it read, how
+fresh the half-hourly data is, and how far the analysis reaches. If a number looks
+wrong, that block tells you what went in.
+
+SAVE the workbook before running, and CLOSE it if you want the derived readings
+written back - Excel would overwrite them otherwise. The run tells you when it
+skipped writing for that reason.
 
 After a run the inbox will be EMPTY. That is your confirmation the files were read;
 the originals are safe in system/half-hourly-archive/. Nothing is deleted.
@@ -28,6 +46,7 @@ MOVING HOUSE
 ============
 Do File > Save As on the whole project folder for the new address, then:
   - clear the yellow cells in the workbook and enter the new meter's opening readings,
-  - empty system/half_hourly_store.csv and system/half-hourly-archive/ (old home's history),
+  - empty system/half_hourly_store.csv, system/half-hourly-archive/ and
+    system/bright_state.json (old home's history and meter ids),
   - drop the new home's half-hourly exports into the inbox.
 The old home stays intact in its own copy.

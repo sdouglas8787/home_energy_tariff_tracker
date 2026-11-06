@@ -3,3 +3,10 @@ __pycache__/
 .pytest_cache/
 ~$*.xlsx
 .DS_Store
+
+# Bright / Glowmarkt account details and cached login token — never commit these
+data/input/bright_account.txt
+data/system/bright_state.json
+
+# local workbook backups
+data/system/workbook-backups/

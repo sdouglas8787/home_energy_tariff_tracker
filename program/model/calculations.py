@@ -281,13 +281,36 @@ def build_walkforward(monthly_rows, min_history=6):
     return out
 
 
+def effective_rates(comparisons, e_kwh, g_kwh):
+    """The blended rates each option works out at over the forward year.
+
+    compare_tariffs has already costed the segments -- your fix until it ends, then
+    the new deal, then a renewal rise on anything that lapses. Dividing that cost
+    back out by usage gives one set of rates per option that carries all of it, so
+    anything else pricing a year (the simulation below) stays consistent with the
+    ranking instead of quietly reverting to today's rate card.
+    """
+    out = {}
+    for c in comparisons or []:
+        out[(c["Supplier"], c["Tariff_Name"])] = (
+            c["Electricity_Cost_GBP"] * 100 / e_kwh if e_kwh else c["Elec_Unit_p"],
+            c["Gas_Cost_GBP"] * 100 / g_kwh if g_kwh else c["Gas_Unit_p"],
+            c["Standing_Cost_GBP"] * 100 / 365,
+        )
+    return out
+
+
 def build_montecarlo(usage, errors, tariffs, include_exit, include_incentive,
-                     n=3000, price_vol=0.12, seed=42):
+                     n=3000, price_vol=0.12, seed=42, comparisons=None):
     """Simulate annual cost under uncertain usage (and tracker prices).
 
     Usage varies per the model's own out-of-sample errors; tracker/variable unit
     rates drift with a shared market shock each simulation, fixed tariffs don't.
     Returns per-tariff p5/p50/p95 and the chance a tracker beats the current fix.
+
+    Rates come from `comparisons` when given, so an expiring tariff is simulated as
+    what it becomes rather than what it costs today -- otherwise this would rank an
+    ending fix cheapest and disagree with the ranking on the same page.
     """
     import random
     rnd = random.Random(seed)
@@ -298,6 +321,7 @@ def build_montecarlo(usage, errors, tariffs, include_exit, include_incentive,
     e_m, g_m = sum(e_e) / len(e_e), sum(g_e) / len(g_e)
     e_r = [x - e_m for x in e_e]
     g_r = [x - g_m for x in g_e]
+    rates = effective_rates(comparisons, e0, g0)
     cur_i = next((i for i, t in enumerate(tariffs) if t.is_current), None)
     trk_i = [i for i, t in enumerate(tariffs) if t.tariff_type.lower() in ("tracker", "variable")]
     per = [[] for _ in tariffs]
@@ -309,8 +333,10 @@ def build_montecarlo(usage, errors, tariffs, include_exit, include_incentive,
         sim = []
         for t in tariffs:
             pd = drift if t.tariff_type.lower() in ("tracker", "variable") else 0.0
-            c = (e0 * em * t.elec_unit_p * (1 + pd) / 100 + g0 * gm * t.gas_unit_p * (1 + pd) / 100
-                 + 365 * (t.elec_sc_p + t.gas_sc_p) / 100
+            e_p, g_p, sc_p = rates.get((t.supplier, t.tariff_name),
+                                       (t.elec_unit_p, t.gas_unit_p, t.elec_sc_p + t.gas_sc_p))
+            c = (e0 * em * e_p * (1 + pd) / 100 + g0 * gm * g_p * (1 + pd) / 100
+                 + 365 * sc_p / 100
                  + (t.exit_fee if include_exit else 0) - (t.incentive if include_incentive else 0))
             sim.append(c)
         for i, c in enumerate(sim):
@@ -332,18 +358,189 @@ def build_montecarlo(usage, errors, tariffs, include_exit, include_incentive,
             "prob_tracker_beats_current": (tracker_beats / n) if (cur_i is not None and trk_i) else None}
 
 
-def compare_tariffs(tariffs, e_kwh, g_kwh, include_exit, include_incentive):
-    """Cost each tariff for the forecast usage and rank cheapest first."""
+# Electricity VAT drops from 5% to 0% for the winter -- 1 Oct 2026 to 31 Mar 2027 -- and
+# then goes back to 5%. It is a holiday, not a cut, and treating it as permanent would
+# overstate the saving across the rest of the year. Rates are quoted including VAT, so
+# for those months the electricity side of the bill -- unit rate AND standing charge --
+# falls by 1/1.05. It applies to every tariff alike, so it moves what you pay rather
+# than which deal wins.
+# Suppliers cannot charge an exit fee in the closing days of a fixed term (Ofgem sets
+# this at 49; suppliers commonly apply 50). So a deal that starts inside this window is
+# an early switch on paper but a free one in practice -- which is often the whole
+# difference between a deal being worth taking and not.
+EXIT_FEE_FREE_DAYS = 50
+
+VAT_CHANGE_DATE = date(2026, 10, 1)
+VAT_REVERT_DATE = date(2027, 4, 1)      # None would make the holiday permanent
+VAT_IN_RATES = 0.05
+VAT_AFTER = 0.0
+
+
+def _vat_multipliers(start, days, change_date, vat_in_rates, vat_after, revert_date=None):
+    """Per-day multiplier on the electricity side of a bill; 1.0 outside the holiday."""
+    if change_date is None or vat_after is None:
+        return [1.0] * days
+    factor = (1 + vat_after) / (1 + (vat_in_rates or 0.0))
+    out = []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        inside = d >= change_date and (revert_date is None or d < revert_date)
+        out.append(factor if inside else 1.0)
+    return out
+
+
+def _daily_usage(forward, e_kwh, g_kwh, start, days):
+    """Split the forecast year into per-day kWh, shaped by season.
+
+    A switch that lands in October is not the same as one that lands in June: the
+    months you spend on each tariff decide what it costs you. The forward forecast
+    already knows the shape of your year, so we use it as a weighting and scale it
+    to the annual totals, which keeps the comparison consistent with the headline
+    figure. With no forecast to hand, the year is flat -- as it was before.
+    """
+    months = {}
+    for fuel, key in (("Electricity", "e"), ("Gas", "g")):
+        for point in (forward or {}).get(fuel, []):
+            m = point["month"]
+            months.setdefault((m.year, m.month), {})[key] = point["forecast"]
+    e_w, g_w = [], []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        got = months.get((d.year, d.month), {})
+        e_w.append(got.get("e", 1.0))
+        g_w.append(got.get("g", 1.0))
+    # scale to the window: e_kwh is a YEAR's usage, so a two-year window must get two
+    # years of it. Normalising to the window total instead would silently halve it.
+    years = days / 365
+    e_sum, g_sum = (sum(e_w) or 1.0) / years, (sum(g_w) or 1.0) / years
+    return ([e_kwh * w / e_sum for w in e_w], [g_kwh * w / g_sum for w in g_w])
+
+
+def _segments(candidate, current, start, window_end, switch_date, rise):
+    """The run of tariffs you would actually be on, as (from, to, tariff, rate multiplier).
+
+    The multiplier is 1.0 while a fix holds and 1 + the assumed rise once it lapses,
+    because a rate agreed two years ago is not one you can keep. That is the whole
+    point: an expiring tariff has to be costed as what replaces it.
+    """
+    segs = []
+    at = start
+    if current is not None and switch_date > at:          # time still to run on your fix
+        segs.append((at, min(switch_date, window_end), current, 1.0))
+        at = min(switch_date, window_end)
+    available = candidate.start_date if (candidate.start_date and candidate.start_date > at) else at
+    if available > at and current is not None:            # a gap before the new deal starts
+        segs.append((at, min(available, window_end), current, 1 + rise))
+        at = min(available, window_end)
+    if at < window_end:
+        lapses = candidate.end_date if (candidate.end_date and at < candidate.end_date < window_end) else None
+        if lapses:
+            segs.append((at, lapses, candidate, 1.0))
+            # after it lapses the rise compounds once a year, not once ever. Over a single
+            # year that is the same number; over two it is the whole argument for fixing.
+            year, n = lapses, 1
+            while year < window_end:
+                nxt = min(year + timedelta(days=365), window_end)
+                segs.append((year, nxt, candidate, (1 + rise) ** n))
+                year, n = nxt, n + 1
+        else:
+            segs.append((at, window_end, candidate, 1.0))
+    return segs
+
+
+def _cost(segments, e_daily, g_daily, start, vat=None):
+    """Add up a run of segments. Returns (electricity, gas, standing) in pounds.
+
+    `vat` is a per-day multiplier on electricity only. It has to be applied day by day
+    rather than to the total, because the change lands mid-window -- and to the standing
+    charge as well as the unit rate, since VAT is charged on the whole electricity bill.
+    """
+    vat = vat or [1.0] * len(e_daily)
+    e_cost = g_cost = standing = 0.0
+    for seg_start, seg_end, t, mult in segments:
+        i, j = (seg_start - start).days, (seg_end - start).days
+        i, j = max(0, i), min(len(e_daily), j)
+        if j <= i:
+            continue
+        e_cost += sum(e_daily[k] * vat[k] for k in range(i, j)) * t.elec_unit_p * mult / 100
+        g_cost += sum(g_daily[i:j]) * t.gas_unit_p * mult / 100
+        standing += (sum(vat[i:j]) * t.elec_sc_p + (j - i) * t.gas_sc_p) * mult / 100
+    return e_cost, g_cost, standing
+
+
+def compare_tariffs(tariffs, e_kwh, g_kwh, include_exit, include_incentive,
+                    start=None, forward=None, price_rise=0.0, window_days=365,
+                    vat_change_date=VAT_CHANGE_DATE, vat_in_rates=VAT_IN_RATES,
+                    vat_after=VAT_AFTER, vat_revert_date=VAT_REVERT_DATE,
+                    exit_fee_free_days=EXIT_FEE_FREE_DAYS):
+    """Cost each tariff over the SAME next year and rank cheapest first.
+
+    Every option is priced across one window starting today, so they are genuinely
+    comparable: the days still to run on your current fix are included in all of
+    them, because you are having those days whatever you choose. When your fix ends
+    the candidate takes over, and if you do nothing your own rates carry on at
+    `price_rise` -- a rate you agreed two years ago is not one you keep.
+
+    That baseline is the point. Ranking against today's expiring rate makes an old
+    fix look unbeatable right up to the day it lapses, and reports a saving of zero
+    for switching. Ranking against what you would actually pay from the expiry date
+    shows which deal is worth taking.
+
+    Where a tariff cannot start until later, switching early is not an option and
+    Cost_Switch_Today_GBP is None. Where it can, that column costs going now and
+    pays your current tariff's exit fee (the fee you would actually be charged --
+    it is for leaving, not for arriving).
+    """
+    start = start or date.today()
+    window_end = start + timedelta(days=window_days)
+    e_daily, g_daily = _daily_usage(forward, e_kwh, g_kwh, start, window_days)
+    vat = _vat_multipliers(start, window_days, vat_change_date, vat_in_rates, vat_after,
+                           vat_revert_date)
+    rise = price_rise or 0.0
+
+    current = next((t for t in tariffs if t.is_current), None)
+    # you are on your fix until it ends; with no end date there is nothing to wait for
+    at_expiry = current.end_date if (current and current.end_date and current.end_date > start) else start
+
     rows = []
-    current_cost = None
+    baseline = None
     for t in tariffs:
-        e_cost = e_kwh * t.elec_unit_p / 100
-        g_cost = g_kwh * t.gas_unit_p / 100
-        standing = 365 * (t.elec_sc_p + t.gas_sc_p) / 100
+        is_do_nothing = current is not None and t is current
+        # Start_Date is when the deal actually begins, not merely when it becomes
+        # available. A deal that has to start before your fix ends makes you leave
+        # early, and leaving early is what an exit fee is for -- so the two are the
+        # same fact and the cost has to follow the date.
+        switch_date = start if is_do_nothing else (
+            t.start_date if (t.start_date and t.start_date > start) else at_expiry)
+        segs = _segments(t, current, start, window_end, switch_date, rise)
+        e_cost, g_cost, standing = _cost(segs, e_daily, g_daily, start, vat)
         gross = e_cost + g_cost + standing
-        expected = gross + (t.exit_fee if include_exit else 0) - (t.incentive if include_incentive else 0)
-        if t.is_current:
-            current_cost = expected
+        incentive = t.incentive if include_incentive else 0
+        leaves_early = bool(not is_do_nothing and current is not None
+                            and current.end_date and switch_date < current.end_date)
+        # ...but leaving early is free once you are inside the run-out window
+        free_from = (current.end_date - timedelta(days=exit_fee_free_days)
+                     if (current and current.end_date) else None)
+        chargeable = bool(leaves_early and free_from and switch_date < free_from)
+        fee = current.exit_fee if (chargeable and include_exit and current) else 0
+        expected = gross - incentive + fee
+
+        # switching today instead of waiting: only real if the deal is open to you now
+        early = None
+        if not is_do_nothing and not (t.start_date and t.start_date > start):
+            early_segs = _segments(t, current, start, window_end, start, rise)
+            ec, gc, sc = _cost(early_segs, e_daily, g_daily, start, vat)
+            fee = (current.exit_fee if (current and include_exit) else 0)
+            early = ec + gc + sc + fee - incentive
+
+        # this tariff's own rates held for a whole year, ignoring when it starts or ends.
+        # Not the ranking figure -- it is the reference the report re-prices at renewal,
+        # and what you would quote someone comparing rate cards.
+        flat = (e_kwh * t.elec_unit_p / 100 + g_kwh * t.gas_unit_p / 100
+                + 365 * (t.elec_sc_p + t.gas_sc_p) / 100 - incentive)
+        on_candidate = sum((min(b, window_end) - a).days for a, b, ta, _ in segs if ta is t)
+        if is_do_nothing:
+            baseline = expected
         rows.append({
             "Supplier": t.supplier, "Tariff_Name": t.tariff_name, "Type": t.tariff_type,
             "Is_Current": "Yes" if t.is_current else "",
@@ -352,11 +549,21 @@ def compare_tariffs(tariffs, e_kwh, g_kwh, include_exit, include_incentive):
             "Gas_Unit_p": t.gas_unit_p, "Gas_SC_p_day": t.gas_sc_p,
             "Electricity_Cost_GBP": e_cost, "Gas_Cost_GBP": g_cost, "Standing_Cost_GBP": standing,
             "Gross_Annual_Cost_GBP": gross, "Exit_Fee_GBP": t.exit_fee, "Incentive_GBP": t.incentive,
-            "Expected_Annual_Cost_GBP": expected, "Monthly_Equivalent_GBP": expected / 12, "Notes": t.notes,
+            "Expected_Annual_Cost_GBP": expected, "Monthly_Equivalent_GBP": expected / 12,
+            "Cost_Switch_Today_GBP": early, "Cost_At_Todays_Rates_GBP": flat,
+            "Switch_Date": switch_date,
+            "Leaves_Current_Early": ("Yes, fee-free" if (leaves_early and not chargeable)
+                                     else "Yes" if leaves_early else ""),
+            "Exit_Fee_Applied_GBP": fee,
+            "Days_On_This_Tariff": on_candidate,
+            "Notes": t.notes,
         })
+
     rows.sort(key=lambda x: x["Expected_Annual_Cost_GBP"])
-    # Baseline for "saving vs current" = the row tagged Current? = Yes (else cheapest).
-    baseline = current_cost if current_cost is not None else (rows[0]["Expected_Annual_Cost_GBP"] if rows else 0)
+    if baseline is None:
+        baseline = rows[0]["Expected_Annual_Cost_GBP"] if rows else 0
     for r in rows:
         r["Saving_vs_Current_GBP"] = baseline - r["Expected_Annual_Cost_GBP"]
+        r["Saving_Switch_Today_GBP"] = (None if r["Cost_Switch_Today_GBP"] is None
+                                        else baseline - r["Cost_Switch_Today_GBP"])
     return rows

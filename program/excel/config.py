@@ -7,6 +7,7 @@ DATA = ROOT / "data"
 # --- the two places you touch ---
 INPUT_FILE = DATA / "input" / "Home_Energy_Inputs.xlsx"      # you edit this
 HH_INBOX = DATA / "half-hourly-inbox"                        # drag Bright CSV exports here
+BRIGHT_ACCOUNT = DATA / "input" / "bright_account.txt"       # optional: fetch from the API instead
 
 # --- what you open (generated) ---
 REPORTS = DATA / "reports"
@@ -19,6 +20,8 @@ WEATHER_CACHE = SYSTEM / "weather_cache.json"
 FORECAST_LOG = SYSTEM / "forecast_log.csv"
 HH_STORE = SYSTEM / "half_hourly_store.csv"
 HH_ARCHIVE = SYSTEM / "half-hourly-archive"                  # inbox files filed here after import
+BRIGHT_STATE = SYSTEM / "bright_state.json"                  # cached login token + meter ids
+WORKBOOK_BACKUPS = SYSTEM / "workbook-backups"               # copy taken before writing derived readings
 
 # backwards-compat alias
 OUTPUT_DIR = REPORTS

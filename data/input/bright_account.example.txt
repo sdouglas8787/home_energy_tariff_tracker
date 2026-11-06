@@ -1,0 +1,19 @@
+# Bright / Glowmarkt account — OPTIONAL
+# =====================================
+# Fill this in and the tool downloads your half-hourly data by itself, so you
+# never have to export CSVs and drag them into the inbox again.
+#
+# TO USE IT:
+#   1. Rename this file to        bright_account.txt        (drop the ".example")
+#   2. Put in the same email and password you use in the Bright phone app.
+#   3. Run as normal. The first run fetches about a year and takes a few minutes;
+#      after that it only picks up what is new, which is quick.
+#
+# Don't want to? Leave it alone. The inbox still works exactly as before.
+# This file stays on your computer and is excluded from git. Never share it.
+
+username = yourbrightusername@domain.com
+password = yourpassword
+
+# Leave this as it is unless Bright give you your own application id.
+application_id = b0f1b774-a586-4f72-9edd-27ead8aa7a8d

@@ -1,8 +1,9 @@
 """Half-hourly smart-meter data: import, persist, and profile.
 
-Reads Bright / Glowmarkt CSV exports (columns: epochTimestamp, kWh, dateTime),
-appends them into a local store de-duplicated by (fuel, timestamp) so history
-builds up beyond Bright's rolling 13-month window, and turns them into a
+Takes half-hours from either route -- Bright / Glowmarkt CSV exports (columns:
+epochTimestamp, kWh, dateTime) or the API fetch in bright.py -- and appends them
+into a local store de-duplicated by (fuel, timestamp) so history builds up
+beyond Bright's rolling 13-month window, and turns them into a
 time-of-day / day-of-week load profile plus a time-of-use tariff simulator.
 
 Timestamps are UTC in the export; everything here converts to Europe/London so
@@ -45,19 +46,30 @@ def _fuel_from_name(name):
     return None
 
 
-def import_files(folder, store_path, archive_dir=None):
+def import_files(folder, store_path, archive_dir=None, extra=None):
     """Import every CSV in `folder`, merge into `store_path` (de-duplicated), then
     move the processed files into `archive_dir` so the inbox is left empty.
+
+    `extra` is an optional list of (fuel, epoch, kwh) triples from another source --
+    the Bright API fetch -- merged on the same de-duplication key, so whichever route
+    the data arrives by, a half-hour is only ever stored once.
 
     An empty inbox after a run is your confirmation the files were read. Nothing is
     deleted; originals are filed in the archive. Returns (records, files_imported).
     """
     import shutil
     folder = Path(folder)
-    store = _load_store(store_path)
+    store = load_store(store_path)
     seen = {(r[0], r[1]) for r in store}
     added = 0
     files = 0
+    for fuel, epoch, kwh in extra or []:
+        key = (fuel, epoch)
+        if key in seen or kwh < 0:
+            continue
+        seen.add(key)
+        store.append((fuel, epoch, kwh))
+        added += 1
     for f in sorted(folder.glob("*.csv")) if folder.exists() else []:
         fuel = _fuel_from_name(f.name)
         if not fuel:
@@ -89,12 +101,15 @@ def import_files(folder, store_path, archive_dir=None):
     return store, files, rejected
 
 
-def _load_store(path):
+def load_store(path):
     try:
         with open(path, newline="") as fh:
             return [(r["fuel"], int(r["epoch"]), float(r["kwh"])) for r in csv.DictReader(fh)]
     except Exception:
         return []
+
+
+_load_store = load_store          # kept for anything still using the old name
 
 
 def _save_store(path, store):
@@ -234,3 +249,62 @@ def simulate_discount(store, fuel, windows, discount, unit_p):
     annual_kwh = in_window / days * 365
     saving = annual_kwh * discount * unit_p / 100
     return {"annual_kwh_in_window": annual_kwh, "annual_saving": saving}
+
+
+DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def pivot_tables(store, min_slots=46):
+    """Tidy tables of the half-hourly data, shaped for PivotTables.
+
+    One record per row, no merged cells, no title banners -- select the sheet, insert
+    a PivotTable, and the columns are already the dimensions you would want: fuel,
+    date, month, weekday, hour, and whether the day was completely reported.
+
+    Returns [(sheet name, headers, rows, {column: number format})], which is what
+    export_output writes out verbatim.
+    """
+    from collections import defaultdict
+    from datetime import date as _date
+
+    KWH3 = '#,##0.000'
+    half_hourly, daily_counts, daily_sums = [], defaultdict(int), defaultdict(float)
+
+    for fuel, epoch, kwh in sorted(store, key=lambda r: (r[0], r[1])):
+        dt = _local(epoch)
+        slot = dt.hour * 2 + (1 if dt.minute >= 30 else 0)
+        half_hourly.append([dt.date(), dt.strftime("%H:%M"), fuel, kwh, DOW[dt.weekday()],
+                            dt.hour, slot, _date(dt.year, dt.month, 1),
+                            "Yes" if dt.weekday() >= 5 else "No"])
+        daily_counts[(fuel, dt.date())] += 1
+        daily_sums[(fuel, dt.date())] += kwh
+
+    daily = []
+    for (fuel, d), total in sorted(daily_sums.items()):
+        n = daily_counts[(fuel, d)]
+        daily.append([d, fuel, total, n, "Yes" if n >= min_slots else "No",
+                      DOW[d.weekday()], _date(d.year, d.month, 1),
+                      "Yes" if d.weekday() >= 5 else "No"])
+
+    # average shape of a day, by fuel and weekday -- the load profile as a flat table
+    sums, counts = defaultdict(float), defaultdict(int)
+    for d, t, fuel, kwh, wd, hour, slot, month, we in half_hourly:
+        if daily_counts[(fuel, d)] >= min_slots:          # whole days only, or the mean sags
+            sums[(fuel, wd, slot)] += kwh
+            counts[(fuel, wd, slot)] += 1
+    profile = []
+    for (fuel, wd, slot), total in sorted(sums.items(), key=lambda kv: (kv[0][0], DOW.index(kv[0][1]), kv[0][2])):
+        profile.append([fuel, wd, f"{slot // 2:02d}:{'30' if slot % 2 else '00'}", slot,
+                        total / counts[(fuel, wd, slot)], counts[(fuel, wd, slot)]])
+
+    return [
+        ("Daily Usage",
+         ["Date", "Fuel", "kWh", "Half_Hours_Reported", "Complete_Day", "Weekday", "Month", "Weekend"],
+         daily, {"kWh": KWH3, "Date": "yyyy-mm-dd", "Month": "mmm yyyy"}),
+        ("Load Profile",
+         ["Fuel", "Weekday", "Time", "Slot", "Average_kWh", "Days_Averaged"],
+         profile, {"Average_kWh": KWH3}),
+        ("Half Hourly",
+         ["Date", "Time", "Fuel", "kWh", "Weekday", "Hour", "Slot", "Month", "Weekend"],
+         half_hourly, {"kWh": KWH3, "Date": "yyyy-mm-dd", "Month": "mmm yyyy"}),
+    ]

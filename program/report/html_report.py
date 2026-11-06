@@ -1420,7 +1420,11 @@ def render_html(path, address, usage, method, comparisons, insights, backtest,
     suggestions = "".join(f"<li>{s}</li>" for s in sugg)
 
     infl = float(settings.get("Assumed yearly price rise % at renewal", 8) or 8) / 100
-    renewal_cost = current_cost * (1 + infl)
+    # current_cost is the ranking figure, which already carries the renewal rise for the
+    # part of the year after your fix ends. Re-price the flat rate-card cost instead, or
+    # the +8% gets applied on top of itself.
+    todays_rates = (current_row or {}).get("Cost_At_Todays_Rates_GBP") or current_cost
+    renewal_cost = todays_rates * (1 + infl)
 
     # what-if tariff picker (dropdown fills the rate boxes; you can then overwrite)
     wf_opts = ['<option value="cur">— Reset to your current tariff —</option>']
@@ -1643,7 +1647,7 @@ def render_html(path, address, usage, method, comparisons, insights, backtest,
         e_kwh=round(usage[0]), g_kwh=round(usage[1]), current_cost=round(current_cost),
         cur_eu=rates[0], cur_esc=rates[1], cur_gu=rates[2], cur_gsc=rates[3],
         renewal=round(renewal_cost), infl_pct=round(infl * 100),
-        current_disp=_money(current_cost), renewal_disp=_money(renewal_cost),
+        current_disp=_money(todays_rates), renewal_disp=_money(renewal_cost),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
